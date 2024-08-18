@@ -15,9 +15,9 @@ UPSTAGE_API_KEY = os.environ['UPSTAGE_API_KEY']
 PB_API_KEY = os.environ['PB_API_KEY']
 tenant_id = os.environ['TENANT_ID']
 base_model = "solar-1-mini-chat-240612"
-
+adapter_id = 'daechul-ai-modelv4/7'
 pb = Predibase(api_token=PB_API_KEY)
-
+pb
 client = OpenAI(
     api_key=UPSTAGE_API_KEY,
     base_url="https://api.upstage.ai/v1/solar"
@@ -27,6 +27,52 @@ app = FastAPI()
 
 class LoanRequest(BaseModel):
     file_url: str
+
+def query_adapter(context, adapter_id=adapter_id, tenant_id=tenant_id, base_model=base_model, PB_API_KEY = PB_API_KEY):
+    prompt = f"""
+            <|im_start|> system
+            You are a bank loan assistant tasked with determining the suitability of a loan applicant based on their provided financial statements. You must:
+
+            1. Analyze the latest financial data provided.
+            2. Decide whether the applicant is suitable for a loan.
+            3. Provide three reasons or insights supporting your decision.
+
+            Your insights must be backed up with financial figures.
+
+            The output must be in JSON format, following the example below STRICTLY:
+
+            {{
+                "stance": true,
+                "insight_1": "Example of the first insight",
+                "insight_2": "Example of the second insight",
+                "insight_3": "Example of the third insight"
+            }}
+
+            <|im_start|> user
+            These are the applicant's financial statements:
+            {context}
+    """
+    # Send POST request
+    url = f"https://serving.app.predibase.com/{tenant_id}/deployments/v2/llms/{base_model}/generate"
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "adapter_id": adapter_id,
+            "adapter_source": "pbase",
+            "temperature": 0.1,
+            "max_new_tokens": 300
+        }
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {PB_API_KEY}"
+    }
+    response = requests.post(
+        url=url, 
+        data=json.dumps(payload),
+        headers=headers
+    )
+    return json.loads(json.loads(response.text)['generated_text'])
 
 def prompt_llm(context, client=client):
     stream = client.chat.completions.create(
@@ -95,20 +141,23 @@ def prompt_summarize(context, client=client):
     response = stream.choices[0].message.content
     return response
 
-def loan_evaluation(file_url, url="https://api.upstage.ai/v1/document-ai/layout-analysis", API_KEY=UPSTAGE_API_KEY):
+def loan_evaluation(file_url,url="https://api.upstage.ai/v1/document-ai/layout-analysis", API_KEY=UPSTAGE_API_KEY):
     response = requests.get(file_url)
     response.raise_for_status()  
 
+    # Load the file into a BytesIO object
     file_data = BytesIO(response.content)
 
     headers = {"Authorization": f"Bearer {API_KEY}"}
     files = {"document": file_data}
 
+    # Post request to the API
     api_response = requests.post(url, headers=headers, files=files)
     api_response.raise_for_status()  
     
     obj = api_response.json()
 
+    # Extract information
     context = ''
     for page in range(obj['billed_pages']):
         page_content = ''
@@ -120,7 +169,7 @@ def loan_evaluation(file_url, url="https://api.upstage.ai/v1/document-ai/layout-
                     page_content += f"\n{element['text']}"
         context += prompt_summarize(page_content)
 
-    loan_results = prompt_llm(context)
+    loan_results=query_adapter(context)
     
     return loan_results
 
